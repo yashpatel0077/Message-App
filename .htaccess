@@ -1,0 +1,14 @@
+<IfModule mod_headers.c>
+    Header set Cache-Control "no-cache, no-store, must-revalidate"
+    Header set Pragma "no-cache"
+    Header set Expires 0
+</IfModule>
+# Prevent direct access to files
+Options -Indexes
+
+# Allow only specific file types
+<FilesMatch "\.(jpg|jpeg|png|gif|pdf|txt|html|css|js|json|xml|md|mp3|wav|ogg)$">
+    Order Allow,Deny
+    Allow from all
+</FilesMatch>
+

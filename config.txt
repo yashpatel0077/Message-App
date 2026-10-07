@@ -1,0 +1,4 @@
+$host = "localhost";          // Hostinger MySQL host (usually 'localhost')
+$db   = "messaging_app";  // CHANGE: your database name
+$user = "root";  // CHANGE: your database username
+$pass = "";  // CHANGE: your database password
