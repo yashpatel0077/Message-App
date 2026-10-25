@@ -1,480 +1,175 @@
 <?php
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
+ini_set('display_errors', '1');
 error_reporting(E_ALL);
 
 session_start();
-require 'config.php';
+require __DIR__ . '/config.php';
 
-function esc($v)
-{
-  return htmlspecialchars($v ?? '', ENT_QUOTES, 'UTF-8');
-}
-
-// Must be logged in
 if (empty($_SESSION['user_id'])) {
-  header("Location: index.php");
-  exit;
+    header('Location: login.php');
+    exit;
 }
 
-$currentUserId = (int) $_SESSION['user_id'];
-$isEdit = isset($_GET['edit']) && $_GET['edit'] == '1';
-
+$userId = (int) $_SESSION['user_id'];
+$isEdit = isset($_GET['edit']) && $_GET['edit'] === '1';
+$returnToSettings = ($_GET['return'] ?? '') === 'settings';
 $errors = [];
-$success = "";
 
-// Fetch current user
-$stmt = $conn->prepare("SELECT id, email, username, profile_name, about, avatar, profile_completed FROM users WHERE id = ? LIMIT 1");
-if (!$stmt) {
-  die("DB error: prepare failed");
+function esc($value): string
+{
+    return htmlspecialchars((string) ($value ?? ''), ENT_QUOTES, 'UTF-8');
 }
-$stmt->bind_param("i", $currentUserId);
+
+$stmt = $conn->prepare('SELECT id, email, display_name, username, profile_name, about, avatar, profile_completed FROM users WHERE id = ? LIMIT 1');
+if (!$stmt) {
+    http_response_code(500);
+    exit('Could not load your profile.');
+}
+$stmt->bind_param('i', $userId);
 $stmt->execute();
 $user = $stmt->get_result()->fetch_assoc();
 $stmt->close();
 
 if (!$user) {
-  session_destroy();
-  header("Location: index.php");
-  exit;
+    session_destroy();
+    header('Location: login.php');
+    exit;
 }
 
-/*
-  Old code forced redirect when profile_completed=1, so user could never edit again.
-  New logic:
-  - If profile is completed AND user is NOT in edit mode -> go home
-  - If user opens with ?edit=1 -> allow editing always
-*/
 if ((int) $user['profile_completed'] === 1 && !$isEdit) {
-  header("Location: index.php");
-  exit;
+    header('Location: index.php');
+    exit;
 }
 
-// Handle form submit
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $profileName = trim((string) ($_POST['profile_name'] ?? ''));
+    $username = trim((string) ($_POST['username'] ?? ''));
+    $about = trim((string) ($_POST['about'] ?? ''));
+    $avatarPath = (string) ($user['avatar'] ?? '');
 
-  $profile_name = trim($_POST['profile_name'] ?? '');
-  $username = trim($_POST['username'] ?? '');
-  $about = trim($_POST['about'] ?? '');
-
-  // Basic validation
-  if ($profile_name === '' || mb_strlen($profile_name) < 2) {
-    $errors[] = "Profile name must be at least 2 characters.";
-  }
-
-  // username rules: letters, numbers, underscore, dot; 3-30 chars
-  if ($username === '' || !preg_match('/^[a-zA-Z0-9._]{3,30}$/', $username)) {
-    $errors[] = "Username must be 3-30 chars and contain only letters, numbers, dot (.) or underscore (_).";
-  }
-
-  // Check username uniqueness (excluding me)
-  if (!$errors) {
-    $stmt = $conn->prepare("SELECT id FROM users WHERE username = ? AND id != ? LIMIT 1");
-    if ($stmt) {
-      $stmt->bind_param("si", $username, $currentUserId);
-      $stmt->execute();
-      $exists = $stmt->get_result()->fetch_assoc();
-      $stmt->close();
-
-      if ($exists) {
-        $errors[] = "This username is already taken.";
-      }
-    } else {
-      $errors[] = "Database error. Please try again.";
+    if (mb_strlen($profileName) < 2 || mb_strlen($profileName) > 100) {
+        $errors[] = 'Profile name must be between 2 and 100 characters.';
     }
-  }
-
-  // Avatar upload (optional)
-  $avatarPath = $user['avatar']; // keep old if not uploaded
-
-  if (!$errors && !empty($_FILES['avatar']['name'])) {
-    if (!is_dir(__DIR__ . "/uploads")) {
-      @mkdir(__DIR__ . "/uploads", 0777, true);
+    if (!preg_match('/^[a-zA-Z0-9._]{3,30}$/', $username)) {
+        $errors[] = 'Username must be 3–30 characters using letters, numbers, dots, or underscores.';
+    }
+    if (mb_strlen($about) > 220) {
+        $errors[] = 'About must be 220 characters or less.';
     }
 
-    if ($_FILES['avatar']['error'] !== UPLOAD_ERR_OK) {
-      $errors[] = "Avatar upload failed. Please try again.";
-    } else {
-      $tmp = $_FILES['avatar']['tmp_name'];
-      $size = (int) ($_FILES['avatar']['size'] ?? 0);
-
-      // Limit size (2MB)
-      if ($size > 2 * 1024 * 1024) {
-        $errors[] = "Avatar must be under 2MB.";
-      } else {
-        $info = @getimagesize($tmp);
-        if (!$info) {
-          $errors[] = "Avatar must be an image (jpg/png/webp).";
+    if (!$errors) {
+        $stmt = $conn->prepare('SELECT id FROM users WHERE username = ? AND id <> ? LIMIT 1');
+        if (!$stmt) {
+            $errors[] = 'Could not validate the username. Please try again.';
         } else {
-          $mime = $info['mime'] ?? '';
-          $ext = '';
-          if ($mime === 'image/jpeg')
-            $ext = 'jpg';
-          elseif ($mime === 'image/png')
-            $ext = 'png';
-          elseif ($mime === 'image/webp')
-            $ext = 'webp';
-          else
-            $errors[] = "Only JPG, PNG, or WEBP allowed.";
-
-          if (!$errors) {
-            $fileName = "avatar_" . $currentUserId . "_" . time() . "." . $ext;
-            $destFs = __DIR__ . "/uploads/" . $fileName;
-
-            if (!move_uploaded_file($tmp, $destFs)) {
-              $errors[] = "Could not save uploaded avatar. Check uploads folder permissions.";
-            } else {
-              $avatarPath = "uploads/" . $fileName;
-            }
-          }
+            $stmt->bind_param('si', $username, $userId);
+            $stmt->execute();
+            $taken = (bool) $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if ($taken) $errors[] = 'That username is already in use.';
         }
-      }
     }
-  }
 
-  // Save
-  if (!$errors) {
-    $completed = 1;
-
-    $stmt = $conn->prepare("
-            UPDATE users
-            SET profile_name = ?, username = ?, about = ?, avatar = ?, profile_completed = ?
-            WHERE id = ?
-        ");
-    if (!$stmt) {
-      $errors[] = "Database error. Please try again.";
-    } else {
-      $stmt->bind_param("ssssii", $profile_name, $username, $about, $avatarPath, $completed, $currentUserId);
-      $stmt->execute();
-      $stmt->close();
-
-      header("Location: index.php");
-      exit;
+    if (!$errors && isset($_FILES['avatar']) && $_FILES['avatar']['error'] !== UPLOAD_ERR_NO_FILE) {
+        $file = $_FILES['avatar'];
+        if ($file['error'] !== UPLOAD_ERR_OK) {
+            $errors[] = 'Avatar upload failed. Please try again.';
+        } elseif ((int) $file['size'] > 2 * 1024 * 1024) {
+            $errors[] = 'Avatar must be 2 MB or smaller.';
+        } else {
+            $image = @getimagesize($file['tmp_name']);
+            $extensions = [
+                'image/jpeg' => 'jpg',
+                'image/png' => 'png',
+                'image/webp' => 'webp',
+                'image/gif' => 'gif',
+            ];
+            $mime = $image['mime'] ?? '';
+            if (!$image || !isset($extensions[$mime])) {
+                $errors[] = 'Choose a JPG, PNG, WEBP, or GIF image.';
+            } else {
+                $avatarDir = __DIR__ . '/uploads/avatars';
+                if (!is_dir($avatarDir) && !mkdir($avatarDir, 0775, true) && !is_dir($avatarDir)) {
+                    $errors[] = 'Could not create the avatar upload folder.';
+                } else {
+                    $fileName = 'user_' . $userId . '_' . bin2hex(random_bytes(8)) . '.' . $extensions[$mime];
+                    if (!move_uploaded_file($file['tmp_name'], $avatarDir . '/' . $fileName)) {
+                        $errors[] = 'Could not save your avatar. Please check upload permissions.';
+                    } else {
+                        $avatarPath = 'uploads/avatars/' . $fileName;
+                    }
+                }
+            }
+        }
     }
-  }
+
+    if (!$errors) {
+        $completed = 1;
+        $stmt = $conn->prepare('UPDATE users SET display_name = ?, profile_name = ?, username = ?, about = ?, avatar = ?, profile_completed = ? WHERE id = ?');
+        if (!$stmt) {
+            $errors[] = 'Could not save your profile. Please try again.';
+        } else {
+            $stmt->bind_param('sssssii', $profileName, $profileName, $username, $about, $avatarPath, $completed, $userId);
+            if ($stmt->execute()) {
+                $stmt->close();
+                $_SESSION['username'] = $username;
+                header('Location: ' . ($returnToSettings ? 'settings.php?profile_saved=1' : 'index.php'));
+                exit;
+            }
+            $stmt->close();
+            $errors[] = 'Could not save your profile. Please try again.';
+        }
+    }
 }
 
-// For avatar initial
-$initial = strtoupper(substr(($user['profile_name'] ?: $user['email'] ?: 'U'), 0, 1));
+$profileNameValue = (string) ($_POST['profile_name'] ?? ($user['profile_name'] ?: $user['display_name'] ?: strtok((string) $user['email'], '@')));
+$profileUsernameValue = (string) ($_POST['username'] ?? ($user['username'] ?? ''));
+$profileAboutValue = (string) ($_POST['about'] ?? ($user['about'] ?? ''));
+$profileAvatar = (string) ($user['avatar'] ?? '');
+$profileInitial = strtoupper(mb_substr($profileNameValue ?: $user['email'] ?: 'U', 0, 1));
+$profileErrors = $errors;
+$profileEditorTitle = $isEdit ? 'Edit your profile' : 'Complete your profile';
+$profileEditorDescription = $isEdit ? 'Update your profile details anytime.' : 'Complete your profile once to start chatting.';
+$profileEditorSaveLabel = $isEdit ? 'Save changes' : 'Save profile';
+$profileFormAction = 'set_profile.php?edit=1' . ($returnToSettings ? '&return=settings' : '');
+$profileFormShowBack = !$returnToSettings;
 ?>
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>
-    <?php echo $isEdit ? 'Edit Profile' : 'Set Profile'; ?>
-  </title>
-
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title><?php echo $isEdit ? 'Profile - WeChats' : 'Complete profile - WeChats'; ?></title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <link rel="stylesheet" href="components/profile_editor.css">
   <style>
-    :root {
-      --bg: #f5f7fb;
-      --card: #ffffff;
-      --muted: #5f6b76;
-      --text: #0f172a;
-      --line: #e6eaf0;
-      --accent: #00a884;
-      --accent2: #00bfa5;
-      --danger: #e11d48;
-      --dangerBg: rgba(225, 29, 72, .10);
-      --shadow: 0 18px 50px rgba(15, 23, 42, .10);
-      --radius: 16px;
-    }
-
-    * {
-      box-sizing: border-box;
-    }
-
-    body {
-      background:
-        radial-gradient(1200px 700px at 20% -20%, rgba(0, 191, 165, .18), transparent 60%),
-        radial-gradient(900px 520px at 120% 0%, rgba(0, 168, 132, .14), transparent 55%),
-        var(--bg);
-      color: var(--text);
-      font-family: Poppins;
-    }
-
-    .topbar {
-      height: 64px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 0 18px;
-      border-bottom: 1px solid rgba(255, 255, 255, .06);
-
-      backdrop-filter: blur(10px);
-      position: sticky;
-      top: 0;
-      z-index: 10;
-    }
-
-    .top-actions a {
-      border: 1px solid rgba(15, 23, 42, .10);
-      background: rgba(255, 255, 255, .60);
-      color: var(--text);
-    }
-
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      font-weight: 700;
-      letter-spacing: .3px;
-    }
-
-    .brand-badge {
-      width: 34px;
-      height: 34px;
-      border-radius: 10px;
-      display: grid;
-      place-items: center;
-      background: linear-gradient(135deg, var(--accent2), var(--accent));
-      color: #062b23;
-      font-weight: 900;
-    }
-
-    .top-actions a {
-      color: var(--text);
-      text-decoration: none;
-      font-weight: 600;
-      padding: 10px 12px;
-      border-radius: 12px;
-      border: 1px solid rgba(255, 255, 255, .08);
-      background: rgba(0, 0, 0, .15);
-    }
-
-    .top-actions a:hover {
-      border-color: rgba(0, 191, 165, .35);
-    }
-
-    .wrap {
-      min-height: calc(100vh - 64px);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 20px 14px;
-    }
-
-    .card {
-      width: 100%;
-      max-width: 560px;
-      border-radius: var(--radius);
-      background: rgba(255, 255, 255, .92);
-      border: 1px solid rgba(255, 255, 255, .08);
-      box-shadow: var(--shadow);
-      padding: 22px;
-    }
-
-    .card h1 {
-      margin: 0 0 6px;
-      font-size: 22px;
-      letter-spacing: .2px;
-    }
-
-    .card p {
-      margin: 0 0 18px;
-      color: var(--muted);
-      line-height: 1.5;
-      font-size: 14px;
-    }
-
-    .alert {
-      border-radius: 14px;
-      padding: 12px 14px;
-      margin-bottom: 14px;
-      border: 1px solid rgba(15, 23, 42, .10);
-      background: rgba(255, 255, 255, .70);
-      color: var(--text);
-
-      font-size: 14px;
-    }
-
-    .alert-danger {
-      border-color: rgba(255, 92, 92, .25);
-      background: var(--dangerBg);
-    }
-
-    .alert-danger div {
-      color: #ffd2d2;
-    }
-
-    .grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 12px;
-    }
-
-    @media (max-width: 560px) {
-      .grid {
-        grid-template-columns: 1fr;
-      }
-    }
-
-    .field label {
-      display: block;
-      font-size: 13px;
-      color: var(--muted);
-      margin: 6px 0 8px;
-    }
-
-    .control,
-    textarea {
-      width: 100%;
-      padding: 12px 14px;
-      border-radius: 14px;
-      border: 1px solid rgba(0, 0, 0, 0.1);
-      background: rgba(255, 255, 255, .75);
-
-      color: var(--text);
-      outline: none;
-      font-size: 14px;
-      transition: border-color .15s ease, box-shadow .15s ease;
-    }
-
-    textarea {
-      min-height: 110px;
-      resize: vertical;
-    }
-
-    .control:focus,
-    textarea:focus {
-      border-color: rgba(0, 191, 165, .45);
-      box-shadow: 0 0 0 4px rgba(0, 191, 165, .12);
-    }
-
-    .hint {
-      margin-top: 6px;
-      font-size: 12px;
-      color: var(--muted);
-    }
-
-    .avatar-row {
-      display: flex;
-      gap: 14px;
-      align-items: center;
-      padding: 12px;
-      border-radius: 14px;
-      border: 1px solid rgba(15, 23, 42, .10);
-      background: rgba(255, 255, 255, .65);
-      margin: 14px 0;
-    }
-
-    .avatar {
-      width: 62px;
-      height: 62px;
-      border-radius: 50%;
-      overflow: hidden;
-      border: 1px solid rgba(15, 23, 42, .10);
-      background: rgba(15, 23, 42, .06);
-      display: grid;
-      place-items: center;
-      font-weight: 800;
-      color: #0f172a;
-      flex: 0 0 auto;
-    }
-
-    .avatar img {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      display: block;
-    }
-
-    .btn {
-      width: 100%;
-      padding: 12px 14px;
-      border: 0;
-      border-radius: 14px;
-      background: linear-gradient(135deg, var(--accent2), var(--accent));
-      color: #062b23;
-      font-weight: 800;
-      cursor: pointer;
-      font-size: 14px;
-      letter-spacing: .2px;
-    }
-
-    .btn:hover {
-      filter: brightness(1.02);
-    }
+    :root{--page:#eef3f7;--ink:#17212b;--muted:#62717e;--line:#dfe7ee;--accent:#00a884;--accent-dark:#087963}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:linear-gradient(125deg,rgba(0,168,132,.14),transparent 34%),linear-gradient(245deg,rgba(47,111,237,.12),transparent 42%),var(--page);font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;color:var(--ink)}
+    .profile-app{min-height:calc(100vh - 20px);display:grid;grid-template-columns:260px minmax(0,1fr);border-radius:14px;overflow:hidden}
+    .rail{padding:24px 18px;background:rgba(255,255,255,.72);border-right:1px solid rgba(223,231,238,.78);display:flex;flex-direction:column;justify-content:space-between;backdrop-filter:blur(14px)}
+    .brand{display:flex;align-items:center;gap:12px;margin:0 0 28px;font-size:18px;font-weight:900}.brand-icon{width:42px;height:42px;display:grid;place-items:center;border-radius:14px;background:var(--accent);color:#fff}
+    .nav{display:grid;gap:8px}.nav a{display:flex;align-items:center;gap:12px;padding:12px 13px;border:1px solid transparent;border-radius:14px;color:#34424f;text-decoration:none;font-weight:800}.nav a:hover,.nav a.active{background:#fff;border-color:var(--line);color:var(--accent-dark)}.nav .logout{color:#c93b36}
+    .content{min-width:0;padding:0;display:flex;align-items:center;justify-content:center}.profile-editor-card{max-width:760px}
+    @media(max-width:820px){body{padding:8px}.profile-app{min-height:calc(100vh - 16px);grid-template-columns:1fr}.rail{padding:16px}.nav{grid-template-columns:repeat(3,1fr)}.nav a{justify-content:center;font-size:13px}.content{padding:0}}
+    @media(max-width:560px){.nav a{gap:6px;padding:10px 6px;font-size:12px}}
   </style>
 </head>
-
 <body>
-  <div class="topbar">
-    <div class="brand">
-      <div class="brand-badge">M</div>
-      <div>Messenger</div>
+<main class="profile-app">
+  <aside class="rail">
+    <div>
+      <div class="brand"><div class="brand-icon"><i class="fa-solid fa-comment-dots" aria-hidden="true"></i></div><span>WeChats</span></div>
+      <nav class="nav" aria-label="Main navigation">
+        <a href="index.php"><i class="fa-solid fa-message" aria-hidden="true"></i> Chats</a>
+        <a href="settings.php"><i class="fa-solid fa-gear" aria-hidden="true"></i> Settings</a>
+        <a class="active" href="set_profile.php?edit=1" aria-current="page"><i class="fa-solid fa-user" aria-hidden="true"></i> Profile</a>
+      </nav>
     </div>
-
-    <div class="top-actions">
-      <a href="logout.php">Logout</a>
-    </div>
-  </div>
-
-  <div class="wrap">
-    <div class="card">
-      <h1>
-        <?php echo $isEdit ? 'Edit your profile' : 'Complete your profile'; ?>
-      </h1>
-      <p>
-        <?php echo $isEdit ? 'Update your profile details anytime.' : 'This is required one time. After saving, next login will go directly to home.'; ?>
-      </p>
-
-      <?php if (!empty($errors)): ?>
-        <div class="alert alert-danger">
-          <?php foreach ($errors as $e): ?>
-            <div>
-              <?php echo esc($e); ?>
-            </div>
-          <?php endforeach; ?>
-        </div>
-      <?php endif; ?>
-
-      <form method="post" enctype="multipart/form-data" autocomplete="off">
-        <div class="grid">
-          <div class="field">
-            <label>Profile name</label>
-            <input class="control" type="text" name="profile_name"
-              value="<?php echo esc($_POST['profile_name'] ?? $user['profile_name']); ?>" required>
-          </div>
-
-          <div class="field">
-            <label>Username</label>
-            <input class="control" type="text" name="username"
-              value="<?php echo esc($_POST['username'] ?? $user['username']); ?>" required>
-            <div class="hint">Allowed: letters, numbers, dot, underscore. Min 3 chars.</div>
-          </div>
-        </div>
-
-        <div class="field">
-          <label>About</label>
-          <textarea name="about"
-            placeholder="Write something..."><?php echo esc($_POST['about'] ?? $user['about']); ?></textarea>
-        </div>
-
-        <div class="avatar-row">
-          <div class="avatar">
-            <?php if (!empty($user['avatar'])): ?>
-              <img src="<?php echo esc($user['avatar']); ?>" alt="Avatar">
-            <?php else: ?>
-              <?php echo esc($initial); ?>
-            <?php endif; ?>
-          </div>
-
-          <div class="field" style="margin:0; flex:1;">
-            <label>Avatar (optional)</label>
-            <input class="control" type="file" name="avatar" accept="image/*">
-            <div class="hint">JPG/PNG/WEBP, max 2MB.</div>
-          </div>
-        </div>
-
-        <button class="btn" type="submit">
-          <?php echo $isEdit ? 'Save changes' : 'Save profile'; ?>
-        </button>
-      </form>
-    </div>
-  </div>
+    <nav class="nav" aria-label="Account"><a class="logout" href="logout.php"><i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i> Logout</a></nav>
+  </aside>
+  <section class="content">
+    <?php require __DIR__ . '/components/profile_editor.php'; ?>
+  </section>
+</main>
 </body>
-
 </html>

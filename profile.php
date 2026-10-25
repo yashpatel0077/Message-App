@@ -170,7 +170,7 @@ function esc($v) { return htmlspecialchars($v ?? '', ENT_QUOTES, 'UTF-8'); }
           <?php echo esc($user['display_name'] ?: $user['phone']); ?>
         </div>
         <div class="field-label">About</div>
-        <div class="field-value"><?php echo esc($user['about'] ?: 'Hey there! I am using Messenger Clone.'); ?></div>
+        <div class="field-value"><?php echo esc($user['about'] ?: 'Hey there! I am using WeChats.'); ?></div>
       </div>
     </div>
 

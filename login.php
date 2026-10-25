@@ -36,10 +36,10 @@ function sendRealEmail($to, $otp)
         $mail->Password = $smtpPass;
         $mail->SMTPSecure = PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS;
         $mail->Port = 587;
-        $mail->setFrom($smtpEmail, 'Messenger');
+        $mail->setFrom($smtpEmail, 'WeChats');
         $mail->addAddress($to);
         $mail->isHTML(true);
-        $mail->Subject = 'Your Messenger Login Code';
+        $mail->Subject = 'Your WeChats Login Code';
         $mail->Body = "
             <div style='font-family:Arial,sans-serif;line-height:1.6'>
                 <h2>Your login code</h2>
@@ -249,7 +249,7 @@ $email = $_SESSION['login_email'] ?? $_SESSION['otp_email'] ?? '';
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Messenger Login</title>
+    <title>WeChats · Sign in</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <style>
         :root{--ink:#111b21;--muted:#667781;--line:#e3e5ea;--panel:#fff;--soft:#f6f7f9;--accent:#25d366;--accent-dark:#128c7e;--danger:#d93025;--danger-bg:#ffebee;--success:#167c45;--success-bg:#e8f8f5}
@@ -291,10 +291,10 @@ $email = $_SESSION['login_email'] ?? $_SESSION['otp_email'] ?? '';
 </head>
 <body>
 <main class="login-shell">
-    <section class="login-visual" aria-label="Messenger preview">
+    <section class="login-visual" aria-label="WeChats preview">
         <div class="brand-mark">
             <div class="brand-icon"><i class="fa-solid fa-comment-dots" aria-hidden="true"></i></div>
-            <span>Messenger</span>
+            <span>WeChats</span>
         </div>
         <div class="visual-copy">
             <h2>Private chats, simple sign in.</h2>
@@ -302,7 +302,7 @@ $email = $_SESSION['login_email'] ?? $_SESSION['otp_email'] ?? '';
         </div>
         <div class="message-stack" aria-hidden="true">
             <div class="demo-bubble">Your secure code is ready<small>Just now</small></div>
-            <div class="demo-bubble">Open chats in one tap<small>Messenger</small></div>
+            <div class="demo-bubble">Open chats in one tap<small>WeChats</small></div>
         </div>
     </section>
 

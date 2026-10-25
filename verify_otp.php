@@ -78,7 +78,7 @@ $fallbackOtp = $_SESSION['otp_fallback'] ?? null;
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Verify OTP - Messenger</title>
+    <title>Verify OTP - WeChats</title>
     <link rel="stylesheet" href="verify_otp.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 </head>
@@ -111,7 +111,7 @@ $fallbackOtp = $_SESSION['otp_fallback'] ?? null;
                     autofocus
                     style="font-size: 24px; font-weight: 600; letter-spacing: 8px; text-align: center;"
                 >
-                <button type="submit">Continue to Messenger</button>
+                <button type="submit">Continue to WeChats</button>
             </form>
 
             <div style="margin-top: 24px;">

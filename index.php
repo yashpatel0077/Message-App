@@ -63,6 +63,18 @@ function ensure_attachment_columns($conn) {
 // Run the column check
 ensure_attachment_columns($conn);
 
+// Presence is based on a short heartbeat from an open chat page.
+$users_has_last_seen = hasColumn($conn, 'users', 'last_seen');
+if (!$users_has_last_seen) {
+  $conn->query("ALTER TABLE users ADD COLUMN last_seen DATETIME NULL DEFAULT NULL");
+  $users_has_last_seen = hasColumn($conn, 'users', 'last_seen');
+}
+$users_has_online_status = hasColumn($conn, 'users', 'show_online_status');
+if (!$users_has_online_status) {
+  $conn->query("ALTER TABLE users ADD COLUMN show_online_status TINYINT(1) NOT NULL DEFAULT 1");
+  $users_has_online_status = hasColumn($conn, 'users', 'show_online_status');
+}
+
 $users_has_username = hasColumn($conn, 'users', 'username');
 $users_has_email = hasColumn($conn, 'users', 'email');
 $users_has_phone = hasColumn($conn, 'users', 'phone');
@@ -71,6 +83,28 @@ $users_has_profile_name = hasColumn($conn, 'users', 'profile_name');
 
 $messages_has_is_read = hasColumn($conn, 'messages', 'is_read');
 $message_col = hasColumn($conn, 'messages', 'message') ? 'message' : (hasColumn($conn, 'messages', 'text') ? 'text' : 'message');
+
+/* ---------- AJAX: Presence heartbeat and status ---------- */
+if (isset($_POST['action']) && $_POST['action'] === 'presence') {
+  if (!$users_has_last_seen)
+    json_out(['ok' => false, 'error' => 'Presence is unavailable'], 503);
+  $st = $conn->prepare("UPDATE users SET last_seen=NOW() WHERE id=?");
+  $st->bind_param("i", $user_id);
+  $st->execute();
+  $st->close();
+
+  $other_id = (int) ($_POST['other_id'] ?? 0);
+  $is_online = false;
+  if ($other_id > 0 && $other_id !== $user_id) {
+    $st = $conn->prepare("SELECT show_online_status=1 AND last_seen IS NOT NULL AND last_seen >= NOW() - INTERVAL 40 SECOND AS is_online FROM users WHERE id=? LIMIT 1");
+    $st->bind_param("i", $other_id);
+    $st->execute();
+    $row = $st->get_result()->fetch_assoc();
+    $st->close();
+    $is_online = !empty($row['is_online']);
+  }
+  json_out(['ok' => true, 'online' => $is_online]);
+}
 
 function avatar_fallback($name)
 {
@@ -760,7 +794,7 @@ if ($selected_user_id > 0 || $selected_group_id > 0)
 
 <head>
   <meta charset="utf-8">
-  <title>Messenger</title>
+  <title>WeChats</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
   <link rel="stylesheet" href="style.css?v=<?php echo esc($cssVer); ?>" type="text/css">
@@ -1066,274 +1100,7 @@ if ($selected_user_id > 0 || $selected_group_id > 0)
 <body class="<?php echo esc($bodyClass); ?>">
 
   <div class="app">
-    <aside class="mini-sidebar">
-      <div class="mini-top">
-        <div class="mini-item mini-item-primary" title="Unread">
-          <i class="fas fa-inbox"></i>
-          <?php if ($unreadCount > 0): ?><span class="mini-badge">
-              <?php echo (int) $unreadCount; ?>
-            </span>
-          <?php endif; ?>
-        </div>
-        <div class="mini-item" title="Create group" onclick="openCreateGroup()"><i class="fas fa-users"></i></div>
-      </div>
-      <div class="mini-bottom">
-        <div class="mini-item mini-small" title="Settings" onclick="location.href='settings.php'"><i
-            class="fas fa-cog"></i></div>
-        <div class="mini-item mini-small" title="Profile" onclick="location.href='set_profile.php?edit=1'"><i
-            class="fas fa-user"></i></div>
-      </div>
-    </aside>
-
-    <section class="chat-sidebar" id="chatSidebar">
-      <div class="chat-sidebar-header">
-        <div class="chat-sidebar-title">Chats</div>
-        <div class="chat-sidebar-actions">
-          <button type="button" class="icon-btn" title="Add user" onclick="openFindUserPopup()"><i
-              class="fas fa-user-plus"></i></button>
-          <button type="button" class="icon-btn" title="More" onclick="toggleChatsMenu(event)"><i
-              class="fas fa-ellipsis-v"></i></button>
-
-          <div class="dropdown" id="chatsMenu" style="display:none;">
-            <button type="button" class="dropdown-item" onclick="openFindUserPopup(); closeChatsMenu();"><i
-                class="fas fa-user-plus"></i> Add user</button>
-            <button type="button" class="dropdown-item" onclick="openCreateGroup(); closeChatsMenu();"><i
-                class="fas fa-users"></i> Create group</button>
-            <button type="button" class="dropdown-item" onclick="openHiddenChats(); closeChatsMenu();"><i
-                class="fas fa-eye"></i> Unhide</button>
-            <button type="button" class="dropdown-item" onclick="location.href='set_profile.php?edit=1'"><i
-                class="fas fa-user"></i> Profile</button>
-            <button type="button" class="dropdown-item" onclick="location.href='settings.php'"><i
-                class="fas fa-cog"></i> Settings</button>
-            <button type="button" class="dropdown-item" onclick="location.href='logout.php'"><i
-                class="fas fa-right-from-bracket"></i> Logout</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="chat-sidebar-search">
-        <i class="fas fa-search"></i>
-        <input type="text" id="searchInput" placeholder="Search" onkeyup="filterChats()">
-      </div>
-
-      <div class="chat-sidebar-filters">
-        <button type="button" class="filter-pill <?php echo ($filter === 'all' ? 'filter-pill-active' : ''); ?>"
-          onclick="setFilter('all')">All</button>
-        <button type="button" class="filter-pill <?php echo ($filter === 'unread' ? 'filter-pill-active' : ''); ?>"
-          onclick="setFilter('unread')">Unread</button>
-        <button type="button" class="filter-pill <?php echo ($filter === 'groups' ? 'filter-pill-active' : ''); ?>"
-          onclick="setFilter('groups')">Groups</button>
-      </div>
-
-      <div class="chat-sidebar-list" id="contactsList">
-        <?php if ($filter === 'all'): ?>
-
-          <?php if (count($all_items) > 0): ?>
-            <?php foreach ($all_items as $it): ?>
-              <?php
-              $type = $it['type'];
-              $id = (int) $it['id'];
-              $name = (string) $it['name'];
-              $av = (string) $it['avatar'];
-              $time = !empty($it['last_time']) ? date('H:i', strtotime($it['last_time'])) : '';
-              $un = (int) ($it['unread_count'] ?? 0);
-
-              $active = '';
-              if ($type === 'user' && $id === $selected_user_id)
-                $active = 'chat-row-active';
-              if ($type === 'group' && $id === $selected_group_id)
-                $active = 'chat-row-active';
-              ?>
-              <div class="chat-row contact-row <?php echo $active; ?>" data-name="<?php echo esc($name); ?>"
-                onclick="<?php echo ($type === 'user') ? "openChat($id)" : "openGroup($id)"; ?>">
-                <div class="chat-avatar" style="background-image:url('<?php echo esc($av); ?>')"></div>
-                <div class="chat-main-info">
-                  <div class="chat-name contact-name">
-                    <?php echo esc($name); ?>
-                  </div>
-                  <div class="chat-preview">
-                    <?php echo $type === 'group' ? 'Group' : 'Chat'; ?>
-                  </div>
-                </div>
-                <div class="chat-meta">
-                  <span class="chat-time">
-                    <?php echo esc($time); ?>
-                  </span>
-                  <?php if ($type === 'user' && $un > 0): ?><span class="unread-badge">
-                      <?php echo $un; ?>
-                    </span>
-                  <?php endif; ?>
-                </div>
-
-                <div class="chat-actions" onclick="event.stopPropagation();">
-                  <div class="chat-more-wrap">
-                    <button class="chat-action-btn" type="button"
-                      onclick="toggleItemMore(event,'<?php echo $type; ?>',<?php echo $id; ?>)"><i
-                        class="fas fa-ellipsis-v"></i></button>
-                    <div class="chat-more-menu" id="itemMore_<?php echo $type; ?>_<?php echo $id; ?>">
-                      <?php if ($type === 'user'): ?>
-                        <button type="button" class="chat-more-item"
-                          onclick="openUserProfile(<?php echo $id; ?>); closeAllItemMore();"><i class="fas fa-user"></i> See
-                          profile</button>
-                        <button type="button" class="chat-more-item"
-                          onclick="pinChat(<?php echo $id; ?>); closeAllItemMore();"><i class="fas fa-thumbtack"></i> Pin /
-                          Unpin</button>
-                        <button type="button" class="chat-more-item"
-                          onclick="hideChat(<?php echo $id; ?>); closeAllItemMore();"><i class="fas fa-eye-slash"></i> Hide
-                          chat</button>
-                        <button type="button" class="chat-more-item chat-more-danger"
-                          onclick="deleteChat(<?php echo $id; ?>); closeAllItemMore();"><i class="fas fa-trash"></i> Delete
-                          chat</button>
-                      <?php else: ?>
-                        <button type="button" class="chat-more-item"
-                          onclick="openGroupMembers(<?php echo $id; ?>); closeAllItemMore();"><i class="fas fa-users"></i> View
-                          members</button>
-                        <button type="button" class="chat-more-item"
-                          onclick="pinGroup(<?php echo $id; ?>); closeAllItemMore();"><i class="fas fa-thumbtack"></i> Pin /
-                          Unpin</button>
-                        <button type="button" class="chat-more-item"
-                          onclick="hideGroup(<?php echo $id; ?>); closeAllItemMore();"><i class="fas fa-eye-slash"></i> Hide
-                          group</button>
-                        <button type="button" class="chat-more-item chat-more-danger"
-                          onclick="deleteGroupChat(<?php echo $id; ?>); closeAllItemMore();"><i class="fas fa-trash"></i> Delete
-                          group chat</button>
-                      <?php endif; ?>
-                    </div>
-                  </div>
-                </div>
-
-              </div>
-            <?php endforeach; ?>
-          <?php else: ?>
-            <div class="chat-row chat-row-demo">
-              <div class="chat-main-info">
-                <div class="chat-name">No chats</div>
-                <div class="chat-preview">Start a conversation or create a group.</div>
-              </div>
-            </div>
-          <?php endif; ?>
-
-        <?php elseif ($filter === 'groups'): ?>
-
-          <?php if ($groups_list && $groups_list->num_rows > 0): ?>
-            <?php while ($g = $groups_list->fetch_assoc()): ?>
-              <?php $gid = (int) $g['id'];
-              $gname = (string) $g['name'];
-              $gav = avatar_fallback($gname); ?>
-              <div class="chat-row contact-row <?php echo ($gid === $selected_group_id) ? 'chat-row-active' : ''; ?>"
-                data-name="<?php echo esc($gname); ?>" onclick="openGroup(<?php echo $gid; ?>)">
-                <div class="chat-avatar" style="background-image:url('<?php echo esc($gav); ?>')"></div>
-                <div class="chat-main-info">
-                  <div class="chat-name contact-name">
-                    <?php echo esc($gname); ?>
-                  </div>
-                  <div class="chat-preview">Group</div>
-                </div>
-                <div class="chat-meta"><span class="chat-time"></span></div>
-
-                <div class="chat-actions" onclick="event.stopPropagation();">
-                  <div class="chat-more-wrap">
-                    <button class="chat-action-btn" type="button"
-                      onclick="toggleItemMore(event,'group',<?php echo $gid; ?>)"><i class="fas fa-ellipsis-v"></i></button>
-                    <div class="chat-more-menu" id="itemMore_group_<?php echo $gid; ?>">
-                      <button type="button" class="chat-more-item"
-                        onclick="openGroupMembers(<?php echo $gid; ?>); closeAllItemMore();"><i class="fas fa-users"></i> View
-                        members</button>
-                      <button type="button" class="chat-more-item"
-                        onclick="pinGroup(<?php echo $gid; ?>); closeAllItemMore();"><i class="fas fa-thumbtack"></i> Pin /
-                        Unpin</button>
-                      <button type="button" class="chat-more-item"
-                        onclick="hideGroup(<?php echo $gid; ?>); closeAllItemMore();"><i class="fas fa-eye-slash"></i> Hide
-                        group</button>
-                      <button type="button" class="chat-more-item chat-more-danger"
-                        onclick="deleteGroupChat(<?php echo $gid; ?>); closeAllItemMore();"><i class="fas fa-trash"></i>
-                        Delete group chat</button>
-                    </div>
-                  </div>
-                </div>
-
-              </div>
-            <?php endwhile; ?>
-          <?php else: ?>
-            <div class="chat-row chat-row-demo">
-              <div class="chat-main-info">
-                <div class="chat-name">No groups</div>
-                <div class="chat-preview">Create your first group.</div>
-              </div>
-            </div>
-          <?php endif; ?>
-
-        <?php else: /* unread */?>
-
-          <?php if ($contacts && $contacts->num_rows > 0): ?>
-            <?php while ($c = $contacts->fetch_assoc()): ?>
-              <?php
-              $cid = (int) $c['id'];
-              $name = user_display_name($c);
-              $av = !empty($c['avatar']) ? $c['avatar'] : avatar_fallback($name);
-              $un = (int) ($c['unread_count'] ?? 0);
-              $lastMsg = trim((string) ($c['last_message'] ?? ''));
-              $lastMsg = mb_substr($lastMsg, 0, 60) . (mb_strlen($lastMsg) > 60 ? '…' : '');
-              $prefix = ((int) ($c['last_sender'] ?? 0) === $user_id) ? 'You: ' : '';
-              $time = $c['last_time'] ? date('H:i', strtotime($c['last_time'])) : '';
-              ?>
-              <div class="chat-row contact-row <?php echo ($cid === $selected_user_id) ? 'chat-row-active' : ''; ?>"
-                data-name="<?php echo esc($name); ?>" onclick="openChat(<?php echo $cid; ?>)">
-                <div class="chat-avatar" style="background-image:url('<?php echo esc($av); ?>')"></div>
-                <div class="chat-main-info">
-                  <div class="chat-name contact-name">
-                    <?php echo esc($name); ?>
-                  </div>
-                  <div class="chat-preview">
-                    <?php echo esc($prefix . $lastMsg); ?>
-                  </div>
-                </div>
-                <div class="chat-meta">
-                  <span class="chat-time">
-                    <?php echo esc($time); ?>
-                  </span>
-                  <?php if ($un > 0): ?><span class="unread-badge">
-                      <?php echo $un; ?>
-                    </span>
-                  <?php endif; ?>
-                </div>
-
-                <div class="chat-actions" onclick="event.stopPropagation();">
-                  <div class="chat-more-wrap">
-                    <button class="chat-action-btn" type="button"
-                      onclick="toggleItemMore(event,'user',<?php echo $cid; ?>)"><i class="fas fa-ellipsis-v"></i></button>
-                    <div class="chat-more-menu" id="itemMore_user_<?php echo $cid; ?>">
-                      <button type="button" class="chat-more-item"
-                        onclick="openUserProfile(<?php echo $cid; ?>); closeAllItemMore();"><i class="fas fa-user"></i> See
-                        profile</button>
-                      <button type="button" class="chat-more-item"
-                        onclick="pinChat(<?php echo $cid; ?>); closeAllItemMore();"><i class="fas fa-thumbtack"></i> Pin /
-                        Unpin</button>
-                      <button type="button" class="chat-more-item"
-                        onclick="hideChat(<?php echo $cid; ?>); closeAllItemMore();"><i class="fas fa-eye-slash"></i> Hide
-                        chat</button>
-                      <button type="button" class="chat-more-item chat-more-danger"
-                        onclick="deleteChat(<?php echo $cid; ?>); closeAllItemMore();"><i class="fas fa-trash"></i> Delete
-                        chat</button>
-                    </div>
-                  </div>
-                </div>
-
-              </div>
-            <?php endwhile; ?>
-          <?php else: ?>
-            <div class="chat-row chat-row-demo">
-              <div class="chat-main-info">
-                <div class="chat-name">No chats</div>
-                <div class="chat-preview">No unread chats.</div>
-              </div>
-            </div>
-          <?php endif; ?>
-
-        <?php endif; ?>
-      </div>
-    </section>
-
+    <?php require __DIR__ . '/components/sidebar.php'; ?>
     <main class="main-content" id="mainContent">
       <header class="main-header">
         <?php if ($selected_group_id > 0 && $chat_group): ?>
@@ -1358,7 +1125,7 @@ if ($selected_user_id > 0 || $selected_group_id > 0)
               <div class="header-name">
                 <?php echo esc($chat_user['name']); ?>
               </div>
-              <div class="header-status">online</div>
+              <div class="header-status presence-status" id="chatPresenceStatus" data-user-id="<?php echo (int) $chat_user['id']; ?>">Checking status…</div>
             </div>
           </div>
         <?php else: ?>
@@ -1614,6 +1381,16 @@ if ($selected_user_id > 0 || $selected_group_id > 0)
     </div>
   </dialog>
 
+  <dialog id="actionConfirmDialog" class="action-confirm-dialog">
+    <div class="action-confirm-icon"><i class="fas fa-eye-slash" aria-hidden="true"></i></div>
+    <h2 class="action-confirm-title" id="actionConfirmTitle">Confirm action</h2>
+    <p class="action-confirm-message" id="actionConfirmMessage"></p>
+    <form method="dialog" class="action-confirm-actions">
+      <button type="submit" class="action-confirm-cancel" value="cancel">Cancel</button>
+      <button type="submit" class="action-confirm-accept" id="actionConfirmAccept" value="confirm">Confirm</button>
+    </form>
+  </dialog>
+
   <script>
     function escapeHtml(str) {
       return String(str || '')
@@ -1625,6 +1402,35 @@ if ($selected_user_id > 0 || $selected_group_id > 0)
     function openChat(id) { location.href = 'index.php?chat=' + id + '&filter=<?php echo esc($filter); ?>'; }
     function openGroup(id) { location.href = 'index.php?group=' + id + '&filter=<?php echo esc($filter); ?>'; }
     function setFilter(f) { const u = new URL(location.href); u.searchParams.set('filter', f); u.searchParams.delete('chat'); u.searchParams.delete('group'); location.href = u.toString(); }
+
+    const actionConfirmDialog = document.getElementById('actionConfirmDialog');
+    function askActionConfirm(title, message, actionLabel) {
+      document.getElementById('actionConfirmTitle').textContent = title;
+      document.getElementById('actionConfirmMessage').textContent = message;
+      document.getElementById('actionConfirmAccept').textContent = actionLabel;
+      actionConfirmDialog.showModal();
+      return new Promise(resolve => actionConfirmDialog.addEventListener('close', () => {
+        resolve(actionConfirmDialog.returnValue === 'confirm');
+      }, { once: true }));
+    }
+
+    /* Presence heartbeat: active users stay online; inactive tabs expire after 40 seconds. */
+    const presenceStatus = document.getElementById('chatPresenceStatus');
+    async function refreshPresence() {
+      const body = new URLSearchParams({ action: 'presence', other_id: presenceStatus?.dataset.userId || '0' });
+      try {
+        const response = await fetch('index.php', { method: 'POST', body, credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+        const data = await response.json();
+        if (presenceStatus && data.ok) {
+          presenceStatus.textContent = data.online ? 'online' : 'offline';
+          presenceStatus.classList.toggle('is-online', data.online);
+          presenceStatus.classList.toggle('is-offline', !data.online);
+        }
+      } catch (e) { /* A later heartbeat will retry if the connection is unavailable. */ }
+    }
+    refreshPresence();
+    window.setInterval(() => { if (document.visibilityState === 'visible') refreshPresence(); }, 15000);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshPresence(); });
 
     /* search */
     function filterChats() {
@@ -1690,22 +1496,34 @@ if ($selected_user_id > 0 || $selected_group_id > 0)
     /* user chat actions */
     async function pinChat(id) { const d = await postChatAction(id, 'pin_toggle'); if (!d.ok) return alert(d.error || 'Pin failed'); location.reload(); }
     async function hideChat(id) {
-      if (!confirm('Hide this chat?')) return;
+      if (!await askActionConfirm('Hide this chat?', 'This conversation will move to Hidden chats. You can unhide it later.', 'Hide chat')) return;
       const d = await postChatAction(id, 'hide_chat'); if (!d.ok) return alert(d.error || 'Hide failed');
       const u = new URL(location.href); if (u.searchParams.get('chat') == String(id)) location.href = 'index.php'; else location.reload();
     }
     async function unhideChat(id) { const d = await postChatAction(id, 'unhide_chat'); if (!d.ok) return alert(d.error || 'Unhide failed'); location.reload(); }
-    async function deleteChat(id) { if (!confirm('Delete this chat from your list?')) return; return hideChat(id); }
+    async function deleteChat(id) {
+      if (!await askActionConfirm('Remove this chat?', 'This conversation will move to Hidden chats. You can unhide it later.', 'Remove chat')) return;
+      const d = await postChatAction(id, 'hide_chat');
+      if (!d.ok) return alert(d.error || 'Could not remove chat');
+      const u = new URL(location.href);
+      if (u.searchParams.get('chat') == String(id)) location.href = 'index.php'; else location.reload();
+    }
 
     /* group actions */
     async function pinGroup(id) { const d = await postGroupAction(id, 'group_pin_toggle'); if (!d.ok) return alert(d.error || 'Pin failed'); location.reload(); }
     async function hideGroup(id) {
-      if (!confirm('Hide this group?')) return;
+      if (!await askActionConfirm('Hide this group?', 'This group will move to Hidden chats. You can unhide it later.', 'Hide group')) return;
       const d = await postGroupAction(id, 'group_hide'); if (!d.ok) return alert(d.error || 'Hide failed');
       const u = new URL(location.href); if (u.searchParams.get('group') == String(id)) location.href = 'index.php'; else location.reload();
     }
     async function unhideGroup(id) { const d = await postGroupAction(id, 'group_unhide'); if (!d.ok) return alert(d.error || 'Unhide failed'); location.reload(); }
-    async function deleteGroupChat(id) { if (!confirm('Delete this group chat from your list?')) return; return hideGroup(id); }
+    async function deleteGroupChat(id) {
+      if (!await askActionConfirm('Remove this group?', 'This group will move to Hidden chats. You can unhide it later.', 'Remove group')) return;
+      const d = await postGroupAction(id, 'group_hide');
+      if (!d.ok) return alert(d.error || 'Could not remove group chat');
+      const u = new URL(location.href);
+      if (u.searchParams.get('group') == String(id)) location.href = 'index.php'; else location.reload();
+    }
 
     /* Center popup: User profile */
     async function openUserProfile(userId) {
